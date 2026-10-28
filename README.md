@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>One tiny macOS menu bar icon. Every AI usage limit you care about.</b><br>
-  Claude · Codex · Cursor · your running agents · your open PRs
+  Claude · Codex · Cursor · your running agents
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@
 
 ---
 
-Ever hit "You've reached your limit" mid-task? UsageBar sits in your menu bar and shows exactly how much Claude Code, Codex and Cursor you have left, when each window resets, which of your agents are still working, and which PRs need you. Glance, plan, keep going.
+Ever hit "You've reached your limit" mid-task? UsageBar sits in your menu bar and shows exactly how much Claude Code, Codex and Cursor you have left, when each window resets, and which of your agents are still working. Glance, plan, keep going.
 
 ```
 Claude
@@ -37,8 +37,6 @@ Local agents
    ○ codex  · api-server                            idle
 VPS agents (my-vps)
    ● oneclick-loop                                  working · reviewing PR #42
-PRs · my-app — 4 open, 1 need attention            ▸
-Review requested from me — 3                       ▸
 ```
 
 ## Why this instead of X?
@@ -80,7 +78,6 @@ Sections appear only for tools you're actually logged in to.
 | **Cursor** | Cursor IDE signed in | Cursor's session token from its local state DB. Included usage, the Auto/Composer/Grok pool, the API pool, on-demand, per-model requests this cycle. |
 | **Local agents** | – | Every interactive `claude` / `codex` process on this Mac: project, branch, last prompt, working/idle. |
 | **VPS agents** | `vpsHost` in config, [herdr](https://herdr.dev) on the host | `herdr agent list` over ssh, plus whether `claude remote-control` is up. |
-| **PRs** | `gh` CLI logged in | Your open PRs per repo (red = conflicts or failing checks) and PRs waiting for your review. Click to open. |
 
 Everything refreshes every 5 minutes. Local agents refresh every time you open the menu. Press `R` in the menu to refresh now. Lines at 90%+ turn red.
 
@@ -92,7 +89,6 @@ Create `~/.config/usagebar.json`. Every key is optional.
 {
   "vpsHost": "my-vps",
   "herdrPath": "/root/.local/bin/herdr",
-  "ghPath": "/opt/homebrew/bin/gh",
   "refreshSeconds": 300,
   "workingSeconds": 120
 }
@@ -102,7 +98,6 @@ Create `~/.config/usagebar.json`. Every key is optional.
 |---|---|---|
 | `vpsHost` | *(none, section hidden)* | An ssh host alias from `~/.ssh/config` that runs herdr. Must work with `ssh -o BatchMode=yes`. |
 | `herdrPath` | `herdr` | Path to herdr on that host. |
-| `ghPath` | auto-detected | Path to the GitHub CLI. |
 | `refreshSeconds` | `300` | How often everything refreshes. |
 | `workingSeconds` | `120` | A local agent counts as "working" if its session log changed within this many seconds. |
 

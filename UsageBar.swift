@@ -1,6 +1,6 @@
 import Cocoa
 
-// UsageBar — single-file macOS menu bar app. Providers: Claude, Codex, Cursor + local/VPS agents + GitHub PRs.
+// UsageBar — single-file macOS menu bar app. Providers: Claude, Codex, Cursor + local/VPS agents.
 // To add a provider: write a func returning Section and add it to the list in refresh() and --print.
 
 struct Line { let label: String; let pct: Double?; let note: String; var url: String? = nil; var red = false }
@@ -8,9 +8,11 @@ struct Section { var name: String; var lines: [Line]; var submenu = false }
 
 func sh(_ args: [String]) -> String {
     let p = Process(); p.executableURL = URL(fileURLWithPath: args[0]); p.arguments = Array(args.dropFirst())
-    let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
-    try? p.run(); p.waitUntilExit()
-    return String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
+    guard (try? p.run()) != nil else { return "" }
+    // Drain stdout before waiting: a child that fills the 64 KB pipe would otherwise block forever.
+    let data = out.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+    return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 // curl subprocess instead of URLSession keeps CFNetwork out of the process (~8 MB RSS saved).
@@ -46,7 +48,7 @@ func claude() -> Section {
     }
     guard let u = get("https://api.anthropic.com/api/oauth/usage",
                       headers: ["Authorization": "Bearer \(tok)", "anthropic-beta": "oauth-2025-04-20"]) else {
-        s.lines = [Line(label: "Fetch failed (token expired? run `claude`)", pct: nil, note: "")]; return s
+        s.lines = [Line(label: "Token expired or offline — open `claude` once to refresh", pct: nil, note: "", red: true)]; return s
     }
     for l in u["limits"] as? [[String: Any]] ?? [] {
         let kind = l["kind"] as? String ?? "?"
@@ -90,7 +92,7 @@ func codex() -> Section {
     guard let u = get("https://chatgpt.com/backend-api/wham/usage",
                       headers: ["Authorization": "Bearer \(tok)", "ChatGPT-Account-Id": t["account_id"] as? String ?? "", "User-Agent": "codex-cli"]),
           let rl = u["rate_limit"] as? [String: Any] else {
-        s.lines = [Line(label: "Fetch failed (token expired? run `codex login`)", pct: nil, note: "")]; return s
+        s.lines = [Line(label: "Token expired or offline — run `codex` once to refresh", pct: nil, note: "", red: true)]; return s
     }
     s.name = "Codex (\(u["plan_type"] as? String ?? "?"))"
     for key in ["primary_window", "secondary_window"] {
@@ -122,7 +124,7 @@ func cursor() -> Section {
     let cookie = "WorkosCursorSessionToken=" + (uid + "::" + tok).addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
     guard let u = get("https://cursor.com/api/usage-summary", headers: ["Cookie": cookie, "User-Agent": "Mozilla/5.0"]),
           let plan = (u["individualUsage"] as? [String: Any])?["plan"] as? [String: Any] else {
-        s.lines = [Line(label: "Fetch failed (re-login in Cursor)", pct: nil, note: "")]; return s
+        s.lines = [Line(label: "Fetch failed — re-login in Cursor or check network", pct: nil, note: "", red: true)]; return s
     }
     s.name = "Cursor (\(u["membershipType"] as? String ?? "?"))"
     let used = plan["used"] as? Double ?? 0, lim = plan["limit"] as? Double ?? 0
@@ -154,14 +156,13 @@ func cursor() -> Section {
     return s
 }
 
-// MARK: Agents — local Claude/Codex processes, herdr agents on a VPS, open PRs.
+// MARK: Agents — local Claude/Codex processes, herdr agents on a VPS.
 let home = NSHomeDirectory()
 // Optional ~/.config/usagebar.json: {"vpsHost": "my-vps", "herdrPath": "herdr", "ghPath": ghPath, "refreshSeconds": 300, "workingSeconds": 120}
 let config: [String: Any] = FileManager.default.contents(atPath: home + "/.config/usagebar.json")
     .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
 let vpsHost = config["vpsHost"] as? String ?? ""
 let herdrPath = config["herdrPath"] as? String ?? "herdr"
-let ghPath = config["ghPath"] as? String ?? ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "gh"
 let refreshSeconds = config["refreshSeconds"] as? Double ?? 300
 let workingSeconds = config["workingSeconds"] as? Double ?? 120
 
@@ -232,41 +233,6 @@ func vpsAgents() -> [Section] {
     return [s]
 }
 
-func pullRequests() -> [Section] {
-    var out: [Section] = []
-    guard FileManager.default.isExecutableFile(atPath: ghPath) else { return [] }
-    let repos = Set(sh([ghPath, "search", "prs", "--author=@me", "--state=open", "--limit", "50", "--json", "repository", "--jq", ".[].repository.nameWithOwner"]).split(separator: "\n").map(String.init))
-    for repo in repos.sorted() {
-        var s = Section(name: "PRs · \(repo.split(separator: "/").last ?? "")", lines: [], submenu: true)
-        let raw = sh([ghPath, "pr", "list", "-R", repo, "--author", "@me", "--limit", "30", "--json",
-                      "number,title,url,isDraft,reviewDecision,mergeable,statusCheckRollup"])
-        for pr in (try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [[String: Any]]) ?? [] {
-            let checks = pr["statusCheckRollup"] as? [[String: Any]] ?? []
-            let failing = checks.filter { ["FAILURE", "ERROR"].contains(($0["conclusion"] ?? $0["state"]) as? String ?? "") }.count
-            let pending = checks.filter { ($0["status"] as? String) == "IN_PROGRESS" || ($0["state"] as? String) == "PENDING" }.count
-            var tags: [String] = []
-            if pr["isDraft"] as? Bool == true { tags.append("draft") }
-            if pr["mergeable"] as? String == "CONFLICTING" { tags.append("conflicts") }
-            if failing > 0 { tags.append("\(failing) checks failing") }
-            if pending > 0 { tags.append("\(pending) running") }
-            if let r = pr["reviewDecision"] as? String, !r.isEmpty { tags.append(r.lowercased().replacingOccurrences(of: "_", with: " ")) }
-            s.lines.append(Line(label: "#\(pr["number"] ?? 0) \((pr["title"] as? String ?? "").prefix(55))", pct: nil,
-                                note: tags.joined(separator: " · "), url: pr["url"] as? String, red: failing > 0 || tags.contains("conflicts")))
-        }
-        let bad = s.lines.filter { $0.red }.count
-        s.name += " — \(s.lines.count) open" + (bad > 0 ? ", \(bad) need attention" : "")
-        out.append(s)
-    }
-    let reqs = sh([ghPath, "search", "prs", "--review-requested=@me", "--state=open", "--limit", "20", "--json", "number,title,url,repository",
-                   "--jq", ".[] | \"\\(.repository.nameWithOwner)#\\(.number)\\t\\(.title)\\t\\(.url)\""]).split(separator: "\n")
-    var rs = Section(name: "Review requested from me — \(reqs.count)", lines: [], submenu: true)
-    for r in reqs {
-        let f = r.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-        rs.lines.append(Line(label: "\(f[0]) \(f.count > 1 ? String(f[1].prefix(55)) : "")", pct: nil, note: "", url: f.count > 2 ? f[2] : nil))
-    }
-    if !reqs.isEmpty { out.append(rs) }
-    return out
-}
 
 class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -281,7 +247,7 @@ class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func refresh() {
         DispatchQueue.global().async {
-            let sections = [claude(), codex(), cursor(), localAgents()] + vpsAgents() + pullRequests()
+            let sections = [claude(), codex(), cursor(), localAgents()] + vpsAgents()
             DispatchQueue.main.async { self.render(sections) }
         }
     }
@@ -318,7 +284,7 @@ class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 }
 
 if CommandLine.arguments.contains("--print") { // self-check: ./UsageBar.app/Contents/MacOS/UsageBar --print
-    for s in [claude(), codex(), cursor(), localAgents()] + vpsAgents() + pullRequests() { print(s.name); s.lines.forEach { print("  \($0.pct.map { "\(Int($0.rounded()))%" } ?? "  ") \($0.label)  \($0.note)") } }
+    for s in [claude(), codex(), cursor(), localAgents()] + vpsAgents() { print(s.name); s.lines.forEach { print("  \($0.pct.map { "\(Int($0.rounded()))%" } ?? "  ") \($0.label)  \($0.note)") } }
     exit(0)
 }
 let app = NSApplication.shared; let d = App(); app.delegate = d
