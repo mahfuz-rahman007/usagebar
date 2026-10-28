@@ -4,7 +4,7 @@ import Cocoa
 // To add a provider: write a func returning Section and add it to the list in refresh() and --print.
 
 struct Line { let label: String; let pct: Double?; let note: String; var url: String? = nil; var red = false }
-struct Section { var name: String; var lines: [Line]; var submenu = false }
+struct Section { var name: String; var lines: [Line]; var submenu = false; var error: String? = nil; var fetched = Date() }
 
 func sh(_ args: [String]) -> String {
     let p = Process(); p.executableURL = URL(fileURLWithPath: args[0]); p.arguments = Array(args.dropFirst())
@@ -48,7 +48,7 @@ func claude() -> Section {
     }
     guard let u = get("https://api.anthropic.com/api/oauth/usage",
                       headers: ["Authorization": "Bearer \(tok)", "anthropic-beta": "oauth-2025-04-20"]) else {
-        s.lines = [Line(label: "Token expired or offline — open `claude` once to refresh", pct: nil, note: "", red: true)]; return s
+        s.error = "offline or token expired (open `claude` once)"; return s
     }
     for l in u["limits"] as? [[String: Any]] ?? [] {
         let kind = l["kind"] as? String ?? "?"
@@ -92,7 +92,7 @@ func codex() -> Section {
     guard let u = get("https://chatgpt.com/backend-api/wham/usage",
                       headers: ["Authorization": "Bearer \(tok)", "ChatGPT-Account-Id": t["account_id"] as? String ?? "", "User-Agent": "codex-cli"]),
           let rl = u["rate_limit"] as? [String: Any] else {
-        s.lines = [Line(label: "Token expired or offline — run `codex` once to refresh", pct: nil, note: "", red: true)]; return s
+        s.error = "offline or token expired (run `codex` once)"; return s
     }
     s.name = "Codex (\(u["plan_type"] as? String ?? "?"))"
     for key in ["primary_window", "secondary_window"] {
@@ -124,7 +124,7 @@ func cursor() -> Section {
     let cookie = "WorkosCursorSessionToken=" + (uid + "::" + tok).addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
     guard let u = get("https://cursor.com/api/usage-summary", headers: ["Cookie": cookie, "User-Agent": "Mozilla/5.0"]),
           let plan = (u["individualUsage"] as? [String: Any])?["plan"] as? [String: Any] else {
-        s.lines = [Line(label: "Fetch failed — re-login in Cursor or check network", pct: nil, note: "", red: true)]; return s
+        s.error = "offline or Cursor session expired"; return s
     }
     s.name = "Cursor (\(u["membershipType"] as? String ?? "?"))"
     let used = plan["used"] as? Double ?? 0, lim = plan["limit"] as? Double ?? 0
@@ -221,7 +221,7 @@ func vpsAgents() -> [Section] {
     var s = Section(name: "VPS agents (\(vpsHost))", lines: [])
     let out = sh(["/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", vpsHost,
                   "\(herdrPath) agent list 2>/dev/null; pgrep -f 'claude remote-control' >/dev/null && echo RC_UP"])
-    guard !out.isEmpty else { s.lines = [Line(label: "unreachable", pct: nil, note: "", red: true)]; return [s] }
+    guard !out.isEmpty else { s.error = "unreachable"; return [s] }
     if let j = out.split(separator: "\n").first.flatMap({ try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }),
        let agents = (j["result"] as? [String: Any])?["agents"] as? [[String: Any]] {
         for a in agents {
@@ -248,12 +248,26 @@ class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func refresh() {
         DispatchQueue.global().async {
-            let sections = [claude(), codex(), cursor(), localAgents()] + vpsAgents()
-            DispatchQueue.main.async { self.render(sections) }
+            var sections = [claude(), codex(), cursor(), localAgents()] + vpsAgents()
+            DispatchQueue.main.async {
+                // Failsafe: a failed fetch keeps the last good numbers and is labelled stale instead of blanking the section.
+                for i in sections.indices where sections[i].error != nil {
+                    if let old = self.lastGood[sections[i].name] {
+                        sections[i].lines = old.lines; sections[i].fetched = old.fetched
+                        sections[i].name = old.name + "  ⚠︎ stale, fetched " + Self.clock.string(from: old.fetched)
+                    } else {
+                        sections[i].lines = [Line(label: sections[i].error!, pct: nil, note: "", red: true)]
+                    }
+                }
+                for s in sections where s.error == nil { self.lastGood[s.name] = s }
+                self.render(sections)
+            }
         }
     }
 
     var cached: [Section] = []
+    var lastGood: [String: Section] = [:]
+    static let clock: DateFormatter = { let f = DateFormatter(); f.timeStyle = .short; f.dateStyle = .none; return f }()
     func menuWillOpen(_ m: NSMenu) { // cheap local refresh so agent states are live when you look
         if let i = cached.firstIndex(where: { $0.name == "Local agents" }) { cached[i] = localAgents(); render(cached) }
     }
@@ -280,14 +294,15 @@ class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if !s.submenu { menu.addItem(.separator()) }
         }
-        menu.addItem(NSMenuItem(title: "Updated \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .short))", action: nil, keyEquivalent: ""))
+        let stale = sections.contains { $0.error != nil }
+        menu.addItem(NSMenuItem(title: (stale ? "⚠︎ Some sources unreachable — refresh needs internet · checked " : "Updated ") + Self.clock.string(from: Date()), action: nil, keyEquivalent: ""))
         let r = NSMenuItem(title: "Refresh", action: #selector(refresh), keyEquivalent: "r"); r.target = self; menu.addItem(r)
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 }
 
 if CommandLine.arguments.contains("--print") { // self-check: ./UsageBar.app/Contents/MacOS/UsageBar --print
-    for s in [claude(), codex(), cursor(), localAgents()] + vpsAgents() { print(s.name); s.lines.forEach { print("  \($0.pct.map { "\(Int($0.rounded()))%" } ?? "  ") \($0.label)  \($0.note)") } }
+    for s in [claude(), codex(), cursor(), localAgents()] + vpsAgents() { print(s.name + (s.error.map { "  [ERROR: \($0)]" } ?? "")); s.lines.forEach { print("  \($0.pct.map { "\(Int($0.rounded()))%" } ?? "  ") \($0.label)  \($0.note)") } }
     exit(0)
 }
 let app = NSApplication.shared; let d = App(); app.delegate = d

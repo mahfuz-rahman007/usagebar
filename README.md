@@ -81,6 +81,8 @@ Sections appear only for tools you're actually logged in to.
 
 Everything refreshes every 5 minutes. Local agents refresh every time you open the menu. Press `R` in the menu to refresh now. Lines at 90%+ turn red.
 
+**Offline?** Nothing breaks. Each section keeps the last numbers it fetched and is marked `⚠︎ stale, fetched 14:03`, and the footer says a refresh needs internet. It catches up on the next refresh once you're back online.
+
 ## Configuration (optional)
 
 Create `~/.config/usagebar.json`. Every key is optional.
