@@ -90,7 +90,8 @@ Create `~/.config/usagebar.json`. Every key is optional.
   "vpsHost": "my-vps",
   "herdrPath": "/root/.local/bin/herdr",
   "refreshSeconds": 300,
-  "workingSeconds": 120
+  "workingSeconds": 120,
+  "maxChars": 72
 }
 ```
 
@@ -100,6 +101,7 @@ Create `~/.config/usagebar.json`. Every key is optional.
 | `herdrPath` | `herdr` | Path to herdr on that host. |
 | `refreshSeconds` | `300` | How often everything refreshes. |
 | `workingSeconds` | `120` | A local agent counts as "working" if its session log changed within this many seconds. |
+| `maxChars` | `72` | Menu lines longer than this are cut with an ellipsis, so the menu keeps a fixed width. |
 
 ## Check it from the terminal
 

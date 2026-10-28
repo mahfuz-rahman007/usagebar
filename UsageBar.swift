@@ -158,13 +158,14 @@ func cursor() -> Section {
 
 // MARK: Agents — local Claude/Codex processes, herdr agents on a VPS.
 let home = NSHomeDirectory()
-// Optional ~/.config/usagebar.json: {"vpsHost": "my-vps", "herdrPath": "herdr", "ghPath": ghPath, "refreshSeconds": 300, "workingSeconds": 120}
+// Optional ~/.config/usagebar.json: {"vpsHost": "my-vps", "herdrPath": "herdr", "ghPath": ghPath, "refreshSeconds": 300, "workingSeconds": 120, "maxChars": 72}
 let config: [String: Any] = FileManager.default.contents(atPath: home + "/.config/usagebar.json")
     .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
 let vpsHost = config["vpsHost"] as? String ?? ""
 let herdrPath = config["herdrPath"] as? String ?? "herdr"
 let refreshSeconds = config["refreshSeconds"] as? Double ?? 300
 let workingSeconds = config["workingSeconds"] as? Double ?? 120
+let maxChars = config["maxChars"] as? Int ?? 72
 
 func ago(_ d: Date) -> String {
     let s = Int(-d.timeIntervalSinceNow); return s < 60 ? "\(s)s" : s < 3600 ? "\(s / 60)m" : "\(s / 3600)h \((s % 3600) / 60)m"
@@ -269,7 +270,9 @@ class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if s.submenu { h.submenu = target; target.autoenablesItems = false }
             for l in s.lines {
                 let pct = l.pct.map { "\(Int($0.rounded()))% used  " } ?? ""
-                let mi = NSMenuItem(title: "   \(pct)\(l.label)" + (l.note.isEmpty ? "" : "  —  \(l.note)"), action: nil, keyEquivalent: "")
+                var text = "   \(pct)\(l.label)" + (l.note.isEmpty ? "" : "  —  \(l.note)")
+                if text.count > maxChars { text = String(text.prefix(maxChars - 1)) + "…" } // fixed menu width
+                let mi = NSMenuItem(title: text, action: nil, keyEquivalent: "")
                 if let p = l.pct, p >= 90 || l.red { mi.attributedTitle = NSAttributedString(string: mi.title, attributes: [.foregroundColor: NSColor.systemRed]) }
                 if l.red && l.pct == nil { mi.attributedTitle = NSAttributedString(string: mi.title, attributes: [.foregroundColor: NSColor.systemRed]) }
                 if let u = l.url { mi.action = #selector(openURL(_:)); mi.target = self; mi.representedObject = u }
